@@ -21,6 +21,9 @@ public class TSDBConnection implements Connection4TSDB {
     private String address;
 
     public TSDBConnection(String address) {
+        if (!address.startsWith("http://")) {
+            address = String.format("http://%s", address);
+        }
         this.address = address;
     }
 
@@ -65,6 +68,11 @@ public class TSDBConnection implements Connection4TSDB {
     }
 
     @Override
+    public void sendRecords(List<String> oids, Long startTime, Long endTime, RecordSender recordSender) throws Exception {
+        TSDBDump.dump4Lindorm(this, oids, startTime, endTime, recordSender);
+    }
+
+    @Override
     public boolean put(DataPoint4TSDB dp) {
         return false;
     }
@@ -90,5 +98,21 @@ public class TSDBConnection implements Connection4TSDB {
             }
         }
         return false;
+    }
+
+    @Override
+    public String queryByTsuid(long start, long end, List<String> oids) {
+        return TSDBUtils.tsuids(address, start, end, oids);
+    }
+
+    @Override
+    public Boolean mput(DataPoint4MultiFieldsTSDB dp) {
+        return TSDBUtils.mput(address, dp);
+    }
+
+    @Override
+    public String queryRange4MultiFields(String metric, List<String> fields,
+                                  Map<String, String> tags, Long start, Long end) throws Exception {
+        return TSDBDump.queryRange4MultiFields(this, metric, fields, tags, start, end);
     }
 }

@@ -6,20 +6,25 @@ import com.alibaba.datax.common.plugin.RecordReceiver;
 import com.alibaba.datax.common.spi.Writer;
 import com.alibaba.datax.common.util.Configuration;
 import com.alibaba.datax.common.util.RetryUtil;
-import com.alibaba.datax.plugin.writer.conn.TSDBConnection;
+import com.alibaba.fastjson.JSON;
 import com.aliyun.hitsdb.client.TSDB;
 import com.aliyun.hitsdb.client.TSDBClientFactory;
 import com.aliyun.hitsdb.client.TSDBConfig;
+import com.aliyun.hitsdb.client.callback.BatchPutIgnoreErrorsCallback;
+import com.aliyun.hitsdb.client.callback.MultiFieldBatchPutIgnoreErrorsCallback;
 import com.aliyun.hitsdb.client.value.request.MultiFieldPoint;
 import com.aliyun.hitsdb.client.value.request.Point;
+import com.aliyun.hitsdb.client.value.response.batch.DetailsResult;
+import com.aliyun.hitsdb.client.value.response.batch.ErrorPoint;
 import com.aliyun.hitsdb.client.value.response.batch.IgnoreErrorsResult;
+import com.aliyun.hitsdb.client.value.response.batch.MultiFieldDetailsResult;
+import com.aliyun.hitsdb.client.value.response.batch.MultiFieldErrorPoint;
 import com.aliyun.hitsdb.client.value.response.batch.MultiFieldIgnoreErrorsResult;
 import com.aliyun.hitsdb.client.value.response.batch.SummaryResult;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.Callable;
 
@@ -62,84 +67,123 @@ public class TSDBWriter extends Writer {
                                 "] is invalid, which should be one of [" + Arrays.toString(SourceDBType.values()) + "].");
             }
 
-            // for tsdb
-            if (DB_TYPE == SourceDBType.TSDB) {
-                String address = originalConfig.getString(Key.ENDPOINT);
-                if (StringUtils.isBlank(address)) {
-                    throw DataXException.asDataXException(TSDBWriterErrorCode.REQUIRED_VALUE,
-                            "The parameter [" + Key.ENDPOINT + "] is not set.");
-                }
-
-                String username = originalConfig.getString(Key.USERNAME, null);
-                if (StringUtils.isBlank(username)) {
-                    LOG.warn("The parameter [" + Key.USERNAME + "] is blank.");
-                }
-                String password = originalConfig.getString(Key.PASSWORD, null);
-                if (StringUtils.isBlank(password)) {
-                    LOG.warn("The parameter [" + Key.PASSWORD + "] is blank.");
-                }
-
-                Integer batchSize = originalConfig.getInt(Key.BATCH_SIZE);
-                if (batchSize == null || batchSize < 1) {
-                    originalConfig.set(Key.BATCH_SIZE, Constant.DEFAULT_BATCH_SIZE);
-                    LOG.info("The parameter [" + Key.BATCH_SIZE +
-                            "] will be default value: " + Constant.DEFAULT_BATCH_SIZE);
-                }
-
-                Integer retrySize = originalConfig.getInt(Key.MAX_RETRY_TIME);
-                if (retrySize == null || retrySize < 0) {
-                    originalConfig.set(Key.MAX_RETRY_TIME, Constant.DEFAULT_TRY_SIZE);
-                    LOG.info("The parameter [" + Key.MAX_RETRY_TIME +
-                            "] will be default value: " + Constant.DEFAULT_TRY_SIZE);
-                }
-
-                Boolean ignoreWriteError = originalConfig.getBool(Key.IGNORE_WRITE_ERROR);
-                if (ignoreWriteError == null) {
-                    originalConfig.set(Key.IGNORE_WRITE_ERROR, Constant.DEFAULT_IGNORE_WRITE_ERROR);
-                    LOG.info("The parameter [" + Key.IGNORE_WRITE_ERROR +
-                            "] will be default value: " + Constant.DEFAULT_IGNORE_WRITE_ERROR);
-                }
-            } else if (DB_TYPE == SourceDBType.RDB) {
-                // for rdb
-                originalConfig.getNecessaryValue(Key.ENDPOINT, TSDBWriterErrorCode.REQUIRED_VALUE);
-                originalConfig.getNecessaryValue(Key.COLUMN_TYPE, TSDBWriterErrorCode.REQUIRED_VALUE);
-                originalConfig.getNecessaryValue(Key.COLUMN, TSDBWriterErrorCode.REQUIRED_VALUE);
-                String endpoint = originalConfig.getString(Key.ENDPOINT);
+            originalConfig.getNecessaryValue(Key.ENDPOINT, TSDBWriterErrorCode.REQUIRED_VALUE);
+            String endpoint = originalConfig.getString(Key.ENDPOINT);
+            String ip;
+            int port;
+            if (endpoint.startsWith("http")) {
                 String[] split = endpoint.split(":");
+
                 if (split.length != 3) {
                     throw DataXException.asDataXException(TSDBWriterErrorCode.REQUIRED_VALUE,
-                            "The parameter [" + Key.ENDPOINT + "] is invalid, which should be [http://IP:Port].");
+                            "The parameter [" + Key.ENDPOINT + "] is invalid, which should be [http://IP:Port] or [IP:Port].");
                 }
-                String ip = split[1].substring(2);
-                int port = Integer.parseInt(split[2]);
+                ip = split[1].substring(2);
+                port = Integer.parseInt(split[2]);
+            } else {
+                String[] split = endpoint.split(":");
+                if (split.length != 2) {
+                    throw DataXException.asDataXException(TSDBWriterErrorCode.REQUIRED_VALUE,
+                            "The parameter [" + Key.ENDPOINT + "] is invalid, which should be [http://IP:Port] or [IP:Port].");
+                }
+                ip = split[0];
+                port = Integer.parseInt(split[1]);
+            }
 
-                String username = originalConfig.getString(Key.USERNAME, null);
-                if (StringUtils.isBlank(username)) {
-                    LOG.warn("The parameter [" + Key.USERNAME + "] is blank.");
+            String username = originalConfig.getString(Key.USERNAME, null);
+            if (StringUtils.isBlank(username)) {
+                LOG.warn("The parameter [" + Key.USERNAME + "] is blank.");
+            }
+
+            String password = originalConfig.getString(Key.PASSWORD, null);
+            if (StringUtils.isBlank(password)) {
+                LOG.warn("The parameter [" + Key.PASSWORD + "] is blank.");
+            }
+
+            TSDBConfig.Builder builder = TSDBConfig.address(ip, port);
+
+
+            if (!StringUtils.isBlank(password) && !StringUtils.isBlank(username)) {
+                builder.basicAuth(username, password);
+            }
+
+            Integer batchSize = originalConfig.getInt(Key.BATCH_SIZE);
+            if (batchSize != null && batchSize > 0) {
+                builder.batchPutSize(batchSize);
+            }
+
+            Integer retrySize = originalConfig.getInt(Key.MAX_RETRY_TIME, Constant.DEFAULT_TRY_SIZE);
+            if (retrySize != null && retrySize >= 0) {
+                builder.batchPutRetryCount(retrySize);
+            }
+
+            Boolean ignoreWriteError = originalConfig.getBool(Key.IGNORE_WRITE_ERROR, false);
+
+            BatchPutIgnoreErrorsCallback batchPutIgnoreErrorsCallback = new BatchPutIgnoreErrorsCallback() {
+                @Override
+                public void response(String s, List<Point> list, IgnoreErrorsResult ignoreErrorsResult) {
+                    if (ignoreErrorsResult == null) {
+                        return;
+                    }
+
+                    List<ErrorPoint> ignoredErrors = ignoreErrorsResult.getIgnoredErrors();
+                    if (ignoredErrors== null || ignoredErrors.isEmpty()) {
+                        return;
+                    }
+
+                    LOG.error("Ignore write exceptions and continue writing for " + ignoreErrorsResult.getFailed() + "points.");
                 }
 
-                String password = originalConfig.getString(Key.PASSWORD, null);
-                if (StringUtils.isBlank(password)) {
-                    LOG.warn("The parameter [" + Key.PASSWORD + "] is blank.");
+                @Override
+                public void failed(String address, List<Point> points, Exception ex) {
+                    LOG.error("Ignore write exceptions and continue writing for " + points.size() + "points.", ex);
+                }
+            };
+            builder.listenBatchPut(batchPutIgnoreErrorsCallback);
+
+            MultiFieldBatchPutIgnoreErrorsCallback multiFieldBatchPutIgnoreErrorsCallback = new MultiFieldBatchPutIgnoreErrorsCallback() {
+                @Override
+                public void response(String s, List<MultiFieldPoint> list, MultiFieldIgnoreErrorsResult multiFieldIgnoreErrorsResult) {
+                    if (multiFieldIgnoreErrorsResult == null) {
+                        return;
+                    }
+
+                    List<MultiFieldErrorPoint> ignoredErrors = multiFieldIgnoreErrorsResult.getIgnoredErrors();
+                    if (ignoredErrors== null || ignoredErrors.isEmpty()) {
+                        return;
+                    }
+                    LOG.error("Ignore write exceptions and continue writing for " + multiFieldIgnoreErrorsResult.getFailed() + "points.");
                 }
 
-                if (!StringUtils.isBlank(password) && !StringUtils.isBlank(username)) {
-                    tsdb = TSDBClientFactory.connect(TSDBConfig.address(ip, port).basicAuth(username, password).config());
-                } else {
-                    tsdb = TSDBClientFactory.connect(TSDBConfig.address(ip, port).config());
+                @Override
+                public void failed(String address, List<MultiFieldPoint> points, Exception ex) {
+                    LOG.error("Ignore write exceptions and continue writing for " + points.size() + "points.", ex);
                 }
+            };
+            builder.listenMultiFieldBatchPut(multiFieldBatchPutIgnoreErrorsCallback);
 
-                String database = originalConfig.getString(Key.DATABASE, null);
-                if (StringUtils.isBlank(database)) {
-                    LOG.info("The parameter [" + Key.DATABASE + "] is blank.");
-                } else {
-                    tsdb.useDatabase(database);
-                }
+            tsdb = TSDBClientFactory.connect(builder.config());
 
-                LOG.info("Tsdb config:" + originalConfig.toJSON());
+            String database = originalConfig.getString(Key.DATABASE, null);
+            if (StringUtils.isBlank(database)) {
+                LOG.info("The parameter [" + Key.DATABASE + "] is blank.");
+            } else {
+                tsdb.useDatabase(database);
+            }
+
+
+            LOG.info("Tsdb config:" + originalConfig.toJSON());
+
+            // for tsdb
+            if (DB_TYPE == SourceDBType.RDB) {
+                // for rdb
+                originalConfig.getNecessaryValue(Key.COLUMN_TYPE, TSDBWriterErrorCode.REQUIRED_VALUE);
+                originalConfig.getNecessaryValue(Key.COLUMN, TSDBWriterErrorCode.REQUIRED_VALUE);
 
             }
         }
+
+
 
         @Override
         public void prepare() {
@@ -149,6 +193,7 @@ public class TSDBWriter extends Writer {
         public List<Configuration> split(int mandatoryNumber) {
             ArrayList<Configuration> configurations = new ArrayList<Configuration>(mandatoryNumber);
             for (int i = 0; i < mandatoryNumber; i++) {
+                originalConfig.set("loadBalanceResourceMark", 0);
                 configurations.add(originalConfig.clone());
             }
             return configurations;
@@ -160,14 +205,6 @@ public class TSDBWriter extends Writer {
 
         @Override
         public void destroy() {
-            if (DB_TYPE == SourceDBType.RDB) {
-                if (tsdb != null) {
-                    try {
-                        tsdb.close();
-                    } catch (IOException ignored) {
-                    }
-                }
-            }
         }
     }
 
@@ -175,7 +212,6 @@ public class TSDBWriter extends Writer {
 
         private static final Logger LOG = LoggerFactory.getLogger(Task.class);
 
-        private TSDBConnection conn;
         private boolean multiField;
         private int batchSize;
         private int retrySize;
@@ -189,7 +225,8 @@ public class TSDBWriter extends Writer {
 
             // single field | multi fields
             this.multiField = writerSliceConfig.getBool(Key.MULTI_FIELD, false);
-            this.ignoreWriteError = writerSliceConfig.getBool(Key.IGNORE_WRITE_ERROR);
+            this.retrySize = writerSliceConfig.getInt(Key.MAX_RETRY_TIME, Constant.DEFAULT_TRY_SIZE);
+            this.ignoreWriteError = writerSliceConfig.getBool(Key.IGNORE_WRITE_ERROR, false);
 
             // for tsdb
             if (DB_TYPE == SourceDBType.TSDB) {
@@ -197,15 +234,14 @@ public class TSDBWriter extends Writer {
                 String database = writerSliceConfig.getString(Key.DATABASE);
                 String username = writerSliceConfig.getString(Key.USERNAME);
                 String password = writerSliceConfig.getString(Key.PASSWORD);
-                this.conn = new TSDBConnection(address, database, username, password);
-                this.batchSize = writerSliceConfig.getInt(Key.BATCH_SIZE);
-                this.retrySize = writerSliceConfig.getInt(Key.MAX_RETRY_TIME);
+                batchSize = writerSliceConfig.getInt(Key.BATCH_SIZE, 100);
 
             } else if (DB_TYPE == SourceDBType.RDB) {
                 // for rdb
                 int timeSize = 0;
                 int fieldSize = 0;
                 int tagSize = 0;
+
                 batchSize = writerSliceConfig.getInt(Key.BATCH_SIZE, 100);
                 List<String> columnName = writerSliceConfig.getList(Key.COLUMN, String.class);
                 List<String> columnType = writerSliceConfig.getList(Key.COLUMN_TYPE, String.class);
@@ -255,8 +291,8 @@ public class TSDBWriter extends Writer {
                     }
                 }
                 tsdbConverter = new TSDBConverter(columnName, columnType);
-
             }
+
         }
 
         @Override
@@ -271,23 +307,41 @@ public class TSDBWriter extends Writer {
                     Record lastRecord = null;
                     Record record;
                     int count = 0;
-                    StringBuilder dps = new StringBuilder();
+                    List points = new ArrayList();
                     while ((record = recordReceiver.getFromReader()) != null) {
                         final int recordLength = record.getColumnNumber();
                         for (int i = 0; i < recordLength; i++) {
-                            dps.append(record.getColumn(i).asString());
-                            dps.append(",");
+                            if (multiField) {
+                                String recordRaw = record.getColumn(i).asString();
+                                if (recordRaw.startsWith("[")) {
+                                    List<MultiFieldPoint> point = JSON.parseArray(recordRaw, MultiFieldPoint.class);
+                                    points.addAll(point);
+                                } else {
+                                    MultiFieldPoint point = JSON.parseObject(recordRaw, MultiFieldPoint.class);
+                                    points.add(point);
+                                }
+                            } else {
+                                String recordRaw = record.getColumn(i).asString();
+                                if (recordRaw.startsWith("[")) {
+                                    List<Point> point = JSON.parseArray(recordRaw, Point.class);
+                                    points.addAll(point);
+                                } else {
+                                    Point point = JSON.parseObject(recordRaw, Point.class);
+                                    points.add(point);
+                                }
+                            }
+
                             count++;
-                            if (count == batchSize) {
+                            if (count >= batchSize) {
                                 count = 0;
-                                batchPut(record, "[" + dps.substring(0, dps.length() - 1) + "]");
-                                dps = new StringBuilder();
+                                batchPut(record, points);
+                                points = new ArrayList();
                             }
                         }
                         lastRecord = record;
                     }
-                    if (StringUtils.isNotBlank(dps.toString())) {
-                        batchPut(lastRecord, "[" + dps.substring(0, dps.length() - 1) + "]");
+                    if (!points.isEmpty()) {
+                        batchPut(lastRecord, points);
                     }
                 } catch (Exception e) {
                     throw DataXException.asDataXException(TSDBWriterErrorCode.RUNTIME_EXCEPTION, e);
@@ -314,24 +368,71 @@ public class TSDBWriter extends Writer {
             }
         }
 
-        private void batchPut(final Record record, final String dps) {
+        private void batchPut(final Record record, List points) {
+                int size;
+                if (ignoreWriteError) {
+                    if (multiField) {
+                        tsdb.multiFieldPut(points);
+                    } else {
+                        tsdb.put(points);
+                    }
+                } else {
+                    if (multiField) {
+                        retryForMput(record, points, ignoreWriteError, retrySize);
+                    } else {
+                        retryForPut(record, points, ignoreWriteError, retrySize);
+                    }
+                }
+        }
+
+        private void retryForPut(Record record, List<Point> points, boolean ignoreWriteError, int retrySize) {
             try {
                 RetryUtil.executeWithRetry(new Callable<Integer>() {
                     @Override
                     public Integer call() {
-                        final boolean success = multiField ? conn.mput(dps) : conn.put(dps);
-                        if (success) {
-                            return 0;
+                        int size;
+                        DetailsResult summaryResult;
+                        summaryResult = tsdb.putSync(points, DetailsResult.class);
+                        if (summaryResult.getFailed() > 0) {
+
+                            throw DataXException.asDataXException(TSDBWriterErrorCode.RUNTIME_EXCEPTION, "Write TSDB failed",
+                                    new Exception(summaryResult.getErrors().toString()));
                         }
-                        getTaskPluginCollector().collectDirtyRecord(record, "Put data points failed!");
-                        throw DataXException.asDataXException(TSDBWriterErrorCode.RUNTIME_EXCEPTION,
-                                "Put data points failed!");
+
+                        return 0;
                     }
                 }, retrySize, 60000L, true);
             } catch (Exception e) {
                 if (ignoreWriteError) {
-                    LOG.warn("Ignore write exceptions and continue writing.");
+                    LOG.error("Ignore write exceptions and continue writing.");
                 } else {
+                    getTaskPluginCollector().collectDirtyRecord(record, "Put data points failed!");
+                    throw DataXException.asDataXException(TSDBWriterErrorCode.RETRY_WRITER_EXCEPTION, e);
+                }
+            }
+        }
+
+        private void retryForMput(Record record, List<MultiFieldPoint> points, boolean ignoreWriteError, int retrySize) {
+            try {
+                RetryUtil.executeWithRetry(new Callable<Integer>() {
+                    @Override
+                    public Integer call() {
+                        int size;
+                        MultiFieldDetailsResult summaryResult;
+                        summaryResult = tsdb.multiFieldPutSync(points, MultiFieldDetailsResult.class);
+                        if (summaryResult.getFailed() > 0) {
+                            throw DataXException.asDataXException(TSDBWriterErrorCode.RUNTIME_EXCEPTION, "Write TSDB failed",
+                                    new Exception(summaryResult.getErrors().toString()));
+                        }
+
+                        return 0;
+                    }
+                }, retrySize, 60000L, true);
+            } catch (Exception e) {
+                if (ignoreWriteError) {
+                    LOG.error("Ignore write exceptions and continue writing.");
+                } else {
+                    getTaskPluginCollector().collectDirtyRecord(record, "Put data points failed!");
                     throw DataXException.asDataXException(TSDBWriterErrorCode.RETRY_WRITER_EXCEPTION, e);
                 }
             }
@@ -376,16 +477,6 @@ public class TSDBWriter extends Writer {
                 }
             }
             return size;
-        }
-
-        private long doBatchInsert4GJDW(final List<Record> writerBuffer) {
-            List<Point> points = tsdbConverter.transRecord2Point4GJDW(writerBuffer);
-            SummaryResult summaryResult = tsdb.putSync(points, SummaryResult.class);
-            if (summaryResult.getFailed() > 0) {
-                LOG.error("write TSDB failed num:" + summaryResult.getFailed());
-                throw DataXException.asDataXException(TSDBWriterErrorCode.RUNTIME_EXCEPTION, "Write TSDB failed", new Exception());
-            }
-            return points.size();
         }
 
         @Override

@@ -64,6 +64,10 @@ public interface Connection4TSDB {
     void sendRecords(String metric, List<String> fields, Map<String, String> tags, Long start, Long end, List<String> columns4RDB, RecordSender recordSender) throws Exception;
 
     /**
+     * Send data points for LINDORM-MIGRATION by oid
+     */
+    void sendRecords(List<String> oids, Long startTime, Long endTime, RecordSender recordSender) throws Exception;
+    /**
      * Put data point.
      *
      * @param dp data point
@@ -85,4 +89,17 @@ public interface Connection4TSDB {
      * @return true: supported; false: not yet!
      */
     boolean isSupported();
+
+    /**
+     * query by tsuid.
+     *
+     * @return string: datapoints in json string
+     */
+    String queryByTsuid(long start, long end, List<String> oids);
+
+
+    Boolean mput(DataPoint4MultiFieldsTSDB dp);
+
+    String queryRange4MultiFields(String metric, List<String> fields,
+                                  Map<String, String> tags, Long start, Long end) throws Exception;
 }

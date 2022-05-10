@@ -32,5 +32,20 @@ public class Key {
     static {
         TYPE_SET.add("TSDB");
         TYPE_SET.add("RDB");
+        TYPE_SET.add("LINDORM-MIGRATION");
     }
+
+    /**
+     *  For LINDORM-MIGRATION
+     */
+    static final String OID_PATH = "oidPath";
+    static final String OID_BATCH = "oidBatch";
+    static final String OID_START = "startOid";
+    static final String OID_END = "endOid";
+    static final String OID_INTERVAL = "oidInterval";
+    static final String OID_CACHE ="oidCache";
+    static final String JOB_NAME = "jobName";
+    static final String SELF_ID = "selfId";
+    static final String JOB_IDS = "jobIds";
+    static final String JOB_BEGIN_DATE_TIME = "jobBeginDateTime";
 }

@@ -5,11 +5,17 @@ import com.alibaba.datax.common.plugin.RecordSender;
 import com.alibaba.datax.plugin.reader.tsdbreader.Constant;
 import com.alibaba.datax.plugin.reader.tsdbreader.util.HttpUtils;
 import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 import com.alibaba.fastjson.parser.Feature;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.StringEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.URL;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -123,6 +129,20 @@ final class TSDBDump {
         }
     }
 
+
+    public static void dump4Lindorm(TSDBConnection conn, List<String> oid, Long start, Long end, RecordSender sender) throws Exception{
+
+        while (true) {
+            String result = conn.queryByTsuid(start, end, oid);
+
+            StringColumn tsdbColumn = new StringColumn(result);
+            Record record = sender.createRecord();
+            record.addColumn(tsdbColumn);
+            sender.sendToWriter(record);
+            break;
+        }
+    }
+
     private static Column getColumn(Object value) throws Exception {
         Column valueColumn;
         if (value instanceof Double) {
@@ -156,7 +176,7 @@ final class TSDBDump {
         return HttpUtils.post(conn.address() + QUERY, body);
     }
 
-    private static String queryRange4MultiFields(TSDBConnection conn, String metric, List<String> fields,
+    public static String queryRange4MultiFields(TSDBConnection conn, String metric, List<String> fields,
                                                  Map<String, String> tags, Long start, Long end) throws Exception {
         // fields
         StringBuilder fieldBuilder = new StringBuilder();
