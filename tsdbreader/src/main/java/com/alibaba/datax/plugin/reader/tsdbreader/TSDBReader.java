@@ -122,13 +122,13 @@ public class TSDBReader extends Reader {
                 String oidPath = originalConfig.getString(Key.OID_PATH);
                 Boolean oidCache = originalConfig.getBool(Key.OID_CACHE, true);
                 int selfId = originalConfig.getInt(Key.SELF_ID);
-                List jobIds = (List<Integer>)((List)(originalConfig.getList(Key.JOB_IDS)));
-
+                List jobIds = (List<Integer>)(originalConfig.getList(Key.JOB_IDS, Collections.EMPTY_LIST));
+                List metrics = (List<String>)(originalConfig.getList(Key.METRICS, Collections.EMPTY_LIST));
                 Collections.sort(jobIds);
                 int jobIndex = jobIds.indexOf(selfId);
 
                 // check oid file
-                oidTotalNums = checkOidFile(oidPath, address);
+                oidTotalNums = checkOidFile(oidPath, address, metrics);
 
                 // assign self used oid
                 if (oidTotalNums < jobIds.size()) {
@@ -220,18 +220,18 @@ public class TSDBReader extends Reader {
             }
         }
 
-        private int checkOidFile(String oidPath, String address) {
+        private int checkOidFile(String oidPath, String address, List<String> metrics) {
             int oidNum;
             File oidFile = new File(oidPath);
             String startIndex = "";
             if (!oidFile.exists() || !oidFile.isFile() || oidFile.length() == 0) {
                 // create oid file from mete query result
-                oidNum = updateOidFile(oidPath, address, "");
+                oidNum = updateOidFile(oidPath, address, "", metrics);
             } else {
                 oidNum = getFileLineNum(oidPath);
                 try (ReversedLinesFileReader reversedLinesReader = new ReversedLinesFileReader(oidFile)) {
                     startIndex = reversedLinesReader.readLine();
-                    oidNum += updateOidFile(oidPath, address, startIndex);
+                    oidNum += updateOidFile(oidPath, address, startIndex, metrics);
                 } catch (Exception e) {
                     throw DataXException.asDataXException(TSDBReaderErrorCode.ILLEGAL_VALUE, "读oid文件出错", e);
                 }
@@ -249,17 +249,18 @@ public class TSDBReader extends Reader {
             }
         }
 
-        private int updateOidFile(String oidFile, String address, String startIndex) {
+        private int updateOidFile(String oidFile, String address, String startIndex, List<String> metrics) {
             int lineNum = 0;
             httpClientUtil = new HttpClientUtil();
             try (FileWriter fw = new FileWriter(oidFile, true);
-                 BufferedWriter buf = new BufferedWriter(fw)) {
+                BufferedWriter buf = new BufferedWriter(fw)) {
                 URL url = new URL(address + "/api/search/tsuids");
                 HttpPost httpPost = new HttpPost(url.toURI());
                 while (true) {
                     Map content = new HashMap();
                     content.put("limit", 10000);
                     content.put("startIndex", startIndex);
+                    content.put("metrics", metrics);
                     httpPost.setEntity(new StringEntity(JSON.toJSONString(content), "utf-8"));
                     String result = httpClientUtil.executeAndGetWithRetry(httpPost, 3, 10000);
                     JSONObject jsonResult = (JSONObject) JSON.parse(result);
@@ -535,14 +536,17 @@ public class TSDBReader extends Reader {
 
                     if (!oid_cache) {
                         String oid = lineNumberReader.readLine();
-                        LOG.info("conn address: {}, metric: {}, start: {}, end: {}", conn.address(), oid, startOid, endOid);
                         List<String> oids = new ArrayList();
+                        int subI = 0;
                         while (oid != null) {
                             if (lineNumberReader.getLineNumber() < startOid) {
                                 oid = lineNumberReader.readLine();
                             } else if (lineNumberReader.getLineNumber() >= startOid && lineNumberReader.getLineNumber() < endOid) {
                                 oids.add(oid);
+                                subI++;
                                 if (oids.size() >= oidBatch) {
+                                    LOG.info("startTime: {}, endTime: {}, startOid: {}, endOid: {}, subStart:{}, subEnd{}",
+                                            startTime, endTime, startOid, endOid, subI - oids.size(), subI);
                                     conn.sendRecords(new ArrayList<>(oids), startTime, endTime, recordSender);
                                     oids.clear();
                                 }
@@ -560,6 +564,8 @@ public class TSDBReader extends Reader {
                             if (tempEndOid > oidList.size()) {
                                 tempEndOid = oidList.size();
                             }
+                            LOG.info("startTime: {}, endTime: {}, startOid: {}, endOid: {}, subStart:{}, subEnd{}",
+                                    startTime, endTime, startOid, endOid, i, tempEndOid);
                             conn.sendRecords(oidList.subList(i, tempEndOid), startTime, endTime, recordSender);
                         }
                     }

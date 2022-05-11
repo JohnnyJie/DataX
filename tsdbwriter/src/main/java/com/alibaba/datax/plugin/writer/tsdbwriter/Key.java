@@ -23,6 +23,7 @@ public class Key {
     // for tsdb
     static final String BATCH_SIZE = "batchSize";
     static final String MAX_RETRY_TIME = "maxRetryTime";
+    static final String HTTP_CONNECTION_POOL = "httpConnectionPool";
 
     // for rdb
     static final String COLUMN = "column";

@@ -131,16 +131,12 @@ final class TSDBDump {
 
 
     public static void dump4Lindorm(TSDBConnection conn, List<String> oid, Long start, Long end, RecordSender sender) throws Exception{
+        String result = conn.queryByTsuid(start, end, oid);
 
-        while (true) {
-            String result = conn.queryByTsuid(start, end, oid);
-
-            StringColumn tsdbColumn = new StringColumn(result);
-            Record record = sender.createRecord();
-            record.addColumn(tsdbColumn);
-            sender.sendToWriter(record);
-            break;
-        }
+        StringColumn tsdbColumn = new StringColumn(result);
+        Record record = sender.createRecord();
+        record.addColumn(tsdbColumn);
+        sender.sendToWriter(record);
     }
 
     private static Column getColumn(Object value) throws Exception {

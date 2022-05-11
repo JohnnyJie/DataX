@@ -117,6 +117,11 @@ public class TSDBWriter extends Writer {
                 builder.batchPutRetryCount(retrySize);
             }
 
+            Integer httpConnectionPool = originalConfig.getInt(Key.HTTP_CONNECTION_POOL);
+            if (httpConnectionPool != null && httpConnectionPool > 0) {
+                builder.httpConnectionPool(httpConnectionPool);
+            }
+
             Boolean ignoreWriteError = originalConfig.getBool(Key.IGNORE_WRITE_ERROR, false);
 
             BatchPutIgnoreErrorsCallback batchPutIgnoreErrorsCallback = new BatchPutIgnoreErrorsCallback() {
@@ -306,7 +311,6 @@ public class TSDBWriter extends Writer {
                 try {
                     Record lastRecord = null;
                     Record record;
-                    int count = 0;
                     List points = new ArrayList();
                     while ((record = recordReceiver.getFromReader()) != null) {
                         final int recordLength = record.getColumnNumber();
@@ -331,11 +335,9 @@ public class TSDBWriter extends Writer {
                                 }
                             }
 
-                            count++;
-                            if (count >= batchSize) {
-                                count = 0;
+                            if (points.size() >= batchSize) {
                                 batchPut(record, points);
-                                points = new ArrayList();
+                                points.clear();
                             }
                         }
                         lastRecord = record;
