@@ -260,7 +260,17 @@ public class TSDBReader extends Reader {
                     Map content = new HashMap();
                     content.put("limit", 10000);
                     content.put("startIndex", startIndex);
-                    content.put("metrics", metrics);
+
+                    Iterator<String> metricIter = metrics.iterator();
+                    if (metricIter.hasNext()) {
+                        StringBuilder metricsStrBuilder = new StringBuilder();
+                        metricsStrBuilder.append(metricIter.next().trim());
+                        while (metricIter.hasNext()) {
+                            metricsStrBuilder.append("|").append(metricIter.next().trim());
+                        }
+                        content.put("metric", metricsStrBuilder.toString());
+                    }
+
                     httpPost.setEntity(new StringEntity(JSON.toJSONString(content), "utf-8"));
                     String result = httpClientUtil.executeAndGetWithRetry(httpPost, 3, 10000);
                     JSONObject jsonResult = (JSONObject) JSON.parse(result);
