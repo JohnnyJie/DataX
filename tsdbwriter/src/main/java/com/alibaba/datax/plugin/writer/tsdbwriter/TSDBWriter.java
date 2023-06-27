@@ -12,8 +12,10 @@ import com.aliyun.hitsdb.client.TSDBClientFactory;
 import com.aliyun.hitsdb.client.TSDBConfig;
 import com.aliyun.hitsdb.client.callback.BatchPutIgnoreErrorsCallback;
 import com.aliyun.hitsdb.client.callback.MultiFieldBatchPutIgnoreErrorsCallback;
+import com.aliyun.hitsdb.client.value.request.AbstractPoint;
 import com.aliyun.hitsdb.client.value.request.MultiFieldPoint;
 import com.aliyun.hitsdb.client.value.request.Point;
+import com.aliyun.hitsdb.client.value.request.PointType;
 import com.aliyun.hitsdb.client.value.response.batch.DetailsResult;
 import com.aliyun.hitsdb.client.value.response.batch.ErrorPoint;
 import com.aliyun.hitsdb.client.value.response.batch.IgnoreErrorsResult;
@@ -218,6 +220,7 @@ public class TSDBWriter extends Writer {
         private static final Logger LOG = LoggerFactory.getLogger(Task.class);
 
         private boolean multiField;
+        private boolean realModel;
         private int batchSize;
         private int retrySize;
         private boolean ignoreWriteError;
@@ -230,6 +233,7 @@ public class TSDBWriter extends Writer {
 
             // single field | multi fields
             this.multiField = writerSliceConfig.getBool(Key.MULTI_FIELD, false);
+            this.realModel = writerSliceConfig.getBool(Key.REAL_MODEL, false);
             this.retrySize = writerSliceConfig.getInt(Key.MAX_RETRY_TIME, Constant.DEFAULT_TRY_SIZE);
             this.ignoreWriteError = writerSliceConfig.getBool(Key.IGNORE_WRITE_ERROR, false);
 
@@ -311,18 +315,30 @@ public class TSDBWriter extends Writer {
                 try {
                     Record lastRecord = null;
                     Record record;
-                    List points = new ArrayList();
+                    List<AbstractPoint> points = new ArrayList();
                     while ((record = recordReceiver.getFromReader()) != null) {
                         final int recordLength = record.getColumnNumber();
                         for (int i = 0; i < recordLength; i++) {
                             if (multiField) {
                                 String recordRaw = record.getColumn(i).asString();
+                                List<MultiFieldPoint> tempPoints = new ArrayList<>();
                                 if (recordRaw.startsWith("[")) {
                                     List<MultiFieldPoint> point = JSON.parseArray(recordRaw, MultiFieldPoint.class);
-                                    points.addAll(point);
+                                    tempPoints.addAll(point);
                                 } else {
                                     MultiFieldPoint point = JSON.parseObject(recordRaw, MultiFieldPoint.class);
-                                    points.add(point);
+                                    tempPoints.add(point);
+                                }
+                                if (realModel) {
+                                    for (MultiFieldPoint point : tempPoints) {
+                                        if ((point.getFields().size() == 1) && point.getFields().containsKey("value")) {
+                                            points.add(Point.metric(point.getMetric()).tag(point.getTags()).value(point.getFields().values().toArray()[0]).timestamp(point.getTimestamp()).build(false));
+                                        } else {
+                                            points.add(point);
+                                        }
+                                    }
+                                } else {
+                                    points.addAll(tempPoints);
                                 }
                             } else {
                                 String recordRaw = record.getColumn(i).asString();
@@ -370,16 +386,34 @@ public class TSDBWriter extends Writer {
             }
         }
 
-        private void batchPut(final Record record, List points) {
+        private void batchPut(final Record record, List<AbstractPoint> points) {
+            List<MultiFieldPoint> mpoints = new ArrayList<>();
+            List<Point> spoints = new ArrayList<>();
+            for (AbstractPoint point : points) {
+                if (point.getPointType() == PointType.MULTI_FIELD) {
+                    mpoints.add((MultiFieldPoint)point);
+                } else {
+                    spoints.add((Point) point);
+                }
+            }
+            if (!mpoints.isEmpty()) {
+                batchPut(record, mpoints, true);
+            }
+            if (!spoints.isEmpty()) {
+                batchPut(record, spoints, false);
+            }
+        }
+
+        private void batchPut(final Record record, List points, boolean isMultiField) {
                 int size;
                 if (ignoreWriteError) {
-                    if (multiField) {
+                    if (isMultiField) {
                         tsdb.multiFieldPut(points);
                     } else {
                         tsdb.put(points);
                     }
                 } else {
-                    if (multiField) {
+                    if (isMultiField) {
                         retryForMput(record, points, ignoreWriteError, retrySize);
                     } else {
                         retryForPut(record, points, ignoreWriteError, retrySize);

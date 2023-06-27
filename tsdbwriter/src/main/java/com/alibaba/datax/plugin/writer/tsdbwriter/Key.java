@@ -12,6 +12,7 @@ public class Key {
 
     static final String SOURCE_DB_TYPE = "sourceDbType";
     static final String MULTI_FIELD = "multiField";
+    static final String REAL_MODEL = "realModel";
 
     // common
     static final String ENDPOINT = "endpoint";
